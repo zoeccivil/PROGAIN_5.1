@@ -42,3 +42,6 @@ Thumbs.db
 
 # Local configuration (if needed)
 *.local.ini
+
+# Undo/Redo history
+undo_history.json
