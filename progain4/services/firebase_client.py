@@ -5142,3 +5142,113 @@ class FirebaseClient:
                 logger.critical("3. Espera a que se cree el índice (puede tardar unos minutos)")
                 logger.critical("="*80)
             return []
+
+    # ==================== SNAPSHOT METHODS FOR UNDO/REDO ====================
+
+    def get_transaccion_snapshot(self, proyecto_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a snapshot of a transaction before modifying it (for undo/redo).
+        
+        Args:
+            proyecto_id: Project ID
+            transaction_id: Transaction ID
+            
+        Returns:
+            Transaction data dictionary or None if not found
+        """
+        if not self.is_initialized():
+            logger.error("Firebase not initialized")
+            return None
+        
+        try:
+            doc_ref = (
+                self.db.collection('proyectos')
+                .document(str(proyecto_id))
+                .collection('transacciones')
+                .document(str(transaction_id))
+            )
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict()
+            return None
+        except Exception as e:
+            logger.error(f"Error getting transaction snapshot: {e}")
+            return None
+
+    def get_cuenta_snapshot(self, cuenta_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a snapshot of an account before modifying it (for undo/redo).
+        
+        Args:
+            cuenta_id: Account ID
+            
+        Returns:
+            Account data dictionary or None if not found
+        """
+        if not self.is_initialized():
+            logger.error("Firebase not initialized")
+            return None
+        
+        try:
+            doc_ref = self.db.collection('cuentas').document(str(cuenta_id))
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict()
+            return None
+        except Exception as e:
+            logger.error(f"Error getting account snapshot: {e}")
+            return None
+
+    def get_categoria_snapshot(self, categoria_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a snapshot of a category before modifying it (for undo/redo).
+        
+        Args:
+            categoria_id: Category ID
+            
+        Returns:
+            Category data dictionary or None if not found
+        """
+        if not self.is_initialized():
+            logger.error("Firebase not initialized")
+            return None
+        
+        try:
+            doc_ref = self.db.collection('categorias').document(str(categoria_id))
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict()
+            return None
+        except Exception as e:
+            logger.error(f"Error getting category snapshot: {e}")
+            return None
+
+    def get_presupuesto_snapshot(self, proyecto_id: str, presupuesto_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a snapshot of a budget before modifying it (for undo/redo).
+        
+        Args:
+            proyecto_id: Project ID
+            presupuesto_id: Budget ID
+            
+        Returns:
+            Budget data dictionary or None if not found
+        """
+        if not self.is_initialized():
+            logger.error("Firebase not initialized")
+            return None
+        
+        try:
+            doc_ref = (
+                self.db.collection('proyectos')
+                .document(str(proyecto_id))
+                .collection('presupuestos')
+                .document(str(presupuesto_id))
+            )
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict()
+            return None
+        except Exception as e:
+            logger.error(f"Error getting budget snapshot: {e}")
+            return None
