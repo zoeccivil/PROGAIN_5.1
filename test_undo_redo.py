@@ -10,10 +10,20 @@ import os
 import tempfile
 import json
 
-# Add project root to path
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-sys.path.insert(0, PROJECT_ROOT)
+# Add project root to path - find by looking for progain4 directory
+def find_project_root():
+    """Find project root by locating progain4 directory."""
+    current = os.path.dirname(os.path.abspath(__file__))
+    while current != os.path.dirname(current):  # Not at filesystem root
+        if os.path.exists(os.path.join(current, 'progain4')):
+            return current
+        current = os.path.dirname(current)
+    # Fallback to one level up from test file
+    return os.path.dirname(os.path.abspath(__file__))
+
+PROJECT_ROOT = find_project_root()
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from progain4.commands.base_command import Command
 

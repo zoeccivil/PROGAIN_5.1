@@ -36,9 +36,13 @@ class BatchCommand(Command):
         for i, cmd in enumerate(self.commands):
             if not cmd.execute():
                 logger.error(f"Batch command failed at index {i}")
-                # Optionally rollback successful commands
+                # Rollback successful commands with error handling
                 for j in range(success_count):
-                    self.commands[j].undo()
+                    try:
+                        if not self.commands[j].undo():
+                            logger.error(f"Failed to rollback command at index {j} during batch execute failure")
+                    except Exception as e:
+                        logger.error(f"Exception during rollback of command {j}: {e}")
                 return False
             success_count += 1
         logger.info(f"Batch command executed: {len(self.commands)} commands")

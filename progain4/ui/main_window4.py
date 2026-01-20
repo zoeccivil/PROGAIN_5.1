@@ -79,7 +79,7 @@ class MainWindow4(QMainWindow):
         firebase_client: FirebaseClient,
         proyecto_id: str,
         proyecto_nombre: str,
-        config_manager = None
+        config_manager
     ):
         super().__init__()
 
@@ -92,10 +92,7 @@ class MainWindow4(QMainWindow):
         self.current_proyecto_id = proyecto_id
         self.current_proyecto_nombre = proyecto_nombre
         
-        # ✅ NUEVO: ConfigManager for undo/redo
-        if config_manager is None:
-            from progain4.services.config import ConfigManager
-            config_manager = ConfigManager()
+        # ✅ NUEVO: ConfigManager (now required parameter)
         self.config_manager = config_manager
 
         # Data

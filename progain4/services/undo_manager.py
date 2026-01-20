@@ -51,11 +51,17 @@ class UndoRedoManager:
         self.redo_stack: List[Command] = []
         
         # Determine history file path (in project root)
-        # Get the root directory (2 levels up from services/)
-        services_dir = os.path.dirname(os.path.abspath(__file__))
-        progain4_dir = os.path.dirname(services_dir)
-        root_dir = os.path.dirname(progain4_dir)
-        self.history_file = os.path.join(root_dir, "undo_history.json")
+        # Try to get from config first, otherwise use default location
+        history_file_path = config_manager.get('undo_history_file')
+        
+        if history_file_path:
+            self.history_file = history_file_path
+        else:
+            # Get the root directory (2 levels up from services/)
+            services_dir = os.path.dirname(os.path.abspath(__file__))
+            progain4_dir = os.path.dirname(services_dir)
+            root_dir = os.path.dirname(progain4_dir)
+            self.history_file = os.path.join(root_dir, "undo_history.json")
         
         logger.info(f"Undo/Redo history file: {self.history_file}")
         logger.info(f"Max stack size: {self.max_stack_size}")
@@ -281,8 +287,11 @@ class UndoRedoManager:
                 try:
                     import test_undo_redo
                     return test_undo_redo.MockCommand.from_dict(cmd_data, self.firebase_client)
-                except:
+                except ImportError:
                     logger.warning("Mock command type found but cannot deserialize (test environment required)")
+                    return None
+                except Exception as e:
+                    logger.error(f"Error deserializing Mock command: {e}")
                     return None
             
             if cmd_type == 'Batch':
