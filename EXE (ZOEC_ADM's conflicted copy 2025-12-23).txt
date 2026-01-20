@@ -1,0 +1,3 @@
+py -m PyInstaller --name "progain_app" --onefile --windowed --clean --paths="." --hidden-import="pandas" --hidden-import="plotly" --hidden-import="fpdf" --hidden-import="openpyxl" --hidden-import="progain4.services.report_generator" progain4\main_ynab.py
+
+py -m PyInstaller --name "progain_app" --onefile --windowed --clean --icon="icons/icono_progain. ico" --paths="." --hidden-import="pandas" --hidden-import="plotly" --hidden-import="fpdf" --hidden-import="openpyxl" --hidden-import="progain4.services.report_generator" progain4\main_ynab.py

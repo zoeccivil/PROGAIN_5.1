@@ -1,0 +1,11 @@
+# PROGRAIN 4.0/5.0 Requirements
+# Firebase-based personal finance application
+
+# Firebase Admin SDK
+firebase-admin>=6.0.0
+
+# PyQt6 for UI
+PyQt6>=6.4.0
+
+# Additional utilities
+python-dateutil>=2.8.2

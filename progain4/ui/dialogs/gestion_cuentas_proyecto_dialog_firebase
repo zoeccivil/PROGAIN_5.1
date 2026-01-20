@@ -1,0 +1,301 @@
+from typing import List, Dict, Any, Optional
+
+from PyQt6.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QListWidget,
+    QListWidgetItem,
+    QLabel,
+    QPushButton,
+    QMessageBox,
+    QInputDialog,
+)
+from PyQt6.QtCore import Qt
+
+
+class GestionCategoriasProyectoDialog(QDialog):
+    """
+    Gestión de Categorías del Proyecto (Firebase).
+
+    - Lista todas las categorías maestras.
+    - Permite seleccionar cuáles estarán activas en el proyecto.
+    - Permite agregar / renombrar / borrar categorías maestras.
+    - Guarda la selección en:
+        proyectos/{proyecto_id}/categorias_proyecto
+        con campos:
+          - categoria_id (int)
+          - activo (bool=True)
+    """
+
+    def __init__(self, firebase_client, proyecto_id: str, proyecto_nombre: str, parent=None):
+        super().__init__(parent)
+        self.firebase_client = firebase_client
+        self.proyecto_id = proyecto_id
+        self.proyecto_nombre = proyecto_nombre
+
+        self.setWindowTitle(f"Gestionar Categorías del Proyecto: {proyecto_nombre}")
+        self.setFixedSize(400, 540)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel("Selecciona las categorías que estarán activas en este proyecto:")
+        )
+
+        self.lista_categorias = QListWidget()
+        self.lista_categorias.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        layout.addWidget(self.lista_categorias)
+
+        # Botones de gestión
+        btn_cat_layout = QHBoxLayout()
+        btn_agregar_cat = QPushButton("Agregar")
+        btn_editar_cat = QPushButton("Renombrar")
+        btn_borrar_cat = QPushButton("Borrar")
+        btn_cat_layout.addWidget(btn_agregar_cat)
+        btn_cat_layout.addWidget(btn_editar_cat)
+        btn_cat_layout.addWidget(btn_borrar_cat)
+        layout.addLayout(btn_cat_layout)
+
+        # Botones de guardar/cancelar
+        btn_layout = QHBoxLayout()
+        btn_guardar = QPushButton("Guardar Cambios")
+        btn_cancelar = QPushButton("Cancelar")
+        btn_layout.addWidget(btn_guardar)
+        btn_layout.addWidget(btn_cancelar)
+        layout.addLayout(btn_layout)
+
+        # Estado interno
+        # categorias: lista de dicts maestros con "id" y "nombre"
+        self.categorias: List[Dict[str, Any]] = []
+        # ids seleccionados (int)
+        self.seleccion_categoria: set[int] = set()
+
+        # Cargar datos iniciales
+        self._cargar_categorias()
+
+        # Conexiones
+        btn_guardar.clicked.connect(self._guardar)
+        btn_cancelar.clicked.connect(self.reject)
+        self.lista_categorias.itemSelectionChanged.connect(
+            self._guardar_seleccion_temporal
+        )
+        btn_agregar_cat.clicked.connect(self._agregar_categoria)
+        btn_editar_cat.clicked.connect(self._renombrar_categoria)
+        btn_borrar_cat.clicked.connect(self._borrar_categoria)
+
+    # ----------------------------------------------------------- Carga
+
+    def _cargar_categorias(self):
+        """
+        Carga:
+          - Todas las categorías maestras.
+          - Las categorías ya activas para este proyecto.
+        Marca como seleccionadas las activas.
+        """
+        try:
+            todas = self.firebase_client.get_categorias_maestras() or []
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"No se pudieron cargar las categorías maestras:\n{e}",
+            )
+            todas = []
+
+        try:
+            activas = self.firebase_client.get_categorias_activas_por_proyecto(
+                self.proyecto_id
+            ) or []
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"No se pudieron cargar las categorías del proyecto:\n{e}",
+            )
+            activas = []
+
+        ids_activas = {int(c["id"]) for c in activas if c.get("activo", True)}
+
+        # Normalizar maestros: aseguramos id int, nombre str
+        self.categorias = []
+        for c in todas:
+            raw_id = c.get("id")
+            try:
+                cid = int(raw_id)
+            except Exception:
+                continue
+            nombre = c.get("nombre", f"Categoría {cid}")
+            self.categorias.append({"id": cid, "nombre": nombre, "raw": c})
+
+        self.lista_categorias.clear()
+        self.seleccion_categoria.clear()
+
+        # Llenar lista
+        for cat in self.categorias:
+            item = QListWidgetItem(cat["nombre"])
+            item.setData(Qt.ItemDataRole.UserRole, cat["id"])
+            self.lista_categorias.addItem(item)
+
+        # Marcar activas
+        for i in range(self.lista_categorias.count()):
+            item = self.lista_categorias.item(i)
+            cid = item.data(Qt.ItemDataRole.UserRole)
+            if cid in ids_activas:
+                item.setSelected(True)
+                self.seleccion_categoria.add(cid)
+
+    def _guardar_seleccion_temporal(self):
+        """
+        Actualiza self.seleccion_categoria con la selección actual en la UI.
+        """
+        seleccion: set[int] = set()
+        for i in range(self.lista_categorias.count()):
+            item = self.lista_categorias.item(i)
+            if item.isSelected():
+                cid = item.data(Qt.ItemDataRole.UserRole)
+                if cid is not None:
+                    seleccion.add(int(cid))
+        self.seleccion_categoria = seleccion
+
+    # ----------------------------------------------------------- CRUD categorías maestras
+
+    def _agregar_categoria(self):
+        from PyQt6.QtWidgets import QInputDialog
+
+        nombre, ok = QInputDialog.getText(
+            self, "Nueva Categoría", "Nombre de la categoría:"
+        )
+        if ok and nombre.strip():
+            try:
+                self.firebase_client.agregar_categoria_maestra(nombre.strip())
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"No se pudo agregar la categoría maestra:\n{e}",
+                )
+                return
+            self._cargar_categorias()
+
+    def _renombrar_categoria(self):
+        from PyQt6.QtWidgets import QInputDialog
+
+        sel_row = self.lista_categorias.currentRow()
+        if sel_row < 0:
+            QMessageBox.warning(
+                self, "Sin selección", "Selecciona una categoría para renombrar."
+            )
+            return
+
+        item = self.lista_categorias.item(sel_row)
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        cat = next((c for c in self.categorias if c["id"] == cid), None)
+        if not cat:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "No se encontró la categoría seleccionada en el catálogo maestro.",
+            )
+            return
+
+        nuevo_nombre, ok = QInputDialog.getText(
+            self,
+            "Renombrar Categoría",
+            "Nuevo nombre:",
+            text=cat["nombre"],
+        )
+        if ok and nuevo_nombre.strip():
+            try:
+                self.firebase_client.renombrar_categoria_maestra(
+                    categoria_id=cid, nuevo_nombre=nuevo_nombre.strip()
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"No se pudo renombrar la categoría maestra:\n{e}",
+                )
+                return
+            self._cargar_categorias()
+
+    def _borrar_categoria(self):
+        sel_row = self.lista_categorias.currentRow()
+        if sel_row < 0:
+            QMessageBox.warning(
+                self, "Sin selección", "Selecciona una categoría para borrar."
+            )
+            return
+
+        item = self.lista_categorias.item(sel_row)
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        cat = next((c for c in self.categorias if c["id"] == cid), None)
+        if not cat:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "No se encontró la categoría seleccionada en el catálogo maestro.",
+            )
+            return
+
+        if (
+            QMessageBox.question(
+                self,
+                "Confirmar",
+                f"¿Borrar la categoría '{cat['nombre']}' del catálogo maestro?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            try:
+                self.firebase_client.eliminar_categoria_maestra(cid)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"No se pudo borrar la categoría maestra:\n{e}",
+                )
+                return
+            self._cargar_categorias()
+
+    # ----------------------------------------------------------- Guardar selección en el proyecto
+
+    def _guardar(self):
+        # Actualizar selección antes de guardar
+        self._guardar_seleccion_temporal()
+
+        if not self.seleccion_categoria:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "Debes seleccionar al menos una categoría para el proyecto.",
+            )
+            return
+
+        try:
+            exito = self.firebase_client.asignar_categorias_a_proyecto_firebase(
+                self.proyecto_id,
+                list(self.seleccion_categoria),
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"No se pudieron guardar las categorías del proyecto:\n{e}",
+            )
+            return
+
+        if exito:
+            QMessageBox.information(
+                self,
+                "Guardado",
+                "Categorías del proyecto actualizadas correctamente.",
+            )
+            self.accept()
+        else:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "No se pudieron guardar los cambios.",
+            )
