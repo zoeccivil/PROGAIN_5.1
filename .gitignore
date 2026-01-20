@@ -42,3 +42,8 @@ Thumbs.db
 
 # Local configuration (if needed)
 *.local.ini
+
+# Runtime files
+historial_importaciones.json
+progain4/undo_history.json
+undo_history.json
