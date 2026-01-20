@@ -1412,4 +1412,3 @@ class MainWindow4(QMainWindow):
             message += "⏩ No hay acciones para rehacer\n"
         
         QMessageBox.information(self, "Historial de Cambios", message)
-            QMessageBox.critical(self, "Error", f"Error al abrir diálogo:\n{str(e)}")
