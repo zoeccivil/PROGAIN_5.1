@@ -585,11 +585,7 @@ class GastosPorCategoriaWindowFirebase(QMainWindow):
             )
 
     def exportar_pdf(self):
-        """
-        Exporta usando ReportGenerator. to_pdf_gastos_por_categoria. 
-        
-        ✅ CORREGIDO: Pasa firebase_client y proyecto_id para adjuntos. 
-        """
+        """Exporta el reporte a PDF con ventana de progreso."""
         if not self._export_rows:
             QMessageBox.warning(self, "Sin datos", "No hay datos para exportar.")
             return
@@ -597,58 +593,70 @@ class GastosPorCategoriaWindowFirebase(QMainWindow):
         ruta_archivo, _ = QFileDialog.getSaveFileName(
             self,
             "Guardar PDF",
-            f"{self.proyecto_nombre}_gastos_categoria.pdf",
+            f"{self.proyecto_nombre}_gastos_categoria. pdf",
             "Archivos PDF (*.pdf)",
         )
-        if not ruta_archivo: 
+        if not ruta_archivo:
             return
 
         try:
-            from progain4.services.report_generator import ReportGenerator
+            from progain4. services.report_generator import ReportGenerator
+            from progain4.ui.widgets.progress_dialog import ProgressDialog
 
+            # Obtener transacciones con adjuntos
+            transacciones_con_adjuntos = self._get_transacciones_con_adjuntos()
+            
+            # Calcular pasos totales
+            num_anexos = len(transacciones_con_adjuntos)
+            total_steps = 3 + num_anexos + 1  # Reporte + TOC + Anexos + Merge + Finalizar
+            
+            # Crear ventana de progreso
+            progress_dialog = ProgressDialog(self, total_steps=total_steps)
+            progress_dialog.show()
+            
+            # Función callback para actualizar progreso
+            def update_progress(step, status, detail=""):
+                progress_dialog.update_progress(step, status, detail)
+            
+            # Crear generador de reportes
             date_range = (
                 f"{self.date_desde. date().toString('dd/MM/yyyy')} - "
                 f"{self.date_hasta.date().toString('dd/MM/yyyy')}"
             )
 
-            # ✅ NUEVO: Obtener transacciones con adjuntos
-            transacciones_con_adjuntos = self._get_transacciones_con_adjuntos()
-            
-            logger.info(f"Generando PDF con {len(transacciones_con_adjuntos)} transacciones con adjuntos")
-
-            # ✅ CORREGIDO: Pasar firebase_client y proyecto_id
             rg = ReportGenerator(
                 data=self._export_rows,
                 title="Gastos por Categoría",
-                project_name=self. proyecto_nombre,
+                project_name=self.proyecto_nombre,
                 date_range=date_range,
                 currency_symbol=self.moneda,
                 column_map={
                     "Categoría": "Categoría",
                     "Subcategoría": "Subcategoría",
-                    "Monto": "Monto",
+                    "Monto":  "Monto",
                 },
-                firebase_client=self.firebase_client,  # ✅ AGREGAR
-                proyecto_id=self.proyecto_id,          # ✅ AGREGAR
+                firebase_client=self. firebase_client,
+                proyecto_id=self.proyecto_id,
             )
             
-            # Pasar transacciones con adjuntos al generador
+            # Generar PDF con progreso
             ok, msg = rg.to_pdf_gastos_por_categoria(
                 ruta_archivo,
-                transacciones_anexos=transacciones_con_adjuntos
+                transacciones_anexos=transacciones_con_adjuntos,
+                progress_callback=update_progress
             )
             
-            if ok:
+            # Cerrar ventana de progreso
+            progress_dialog.finish()
+            
+            if ok: 
                 mensaje = "Datos exportados a PDF correctamente."
                 if transacciones_con_adjuntos:
                     mensaje += f"\n\n✅ Se incluyeron {len(transacciones_con_adjuntos)} anexos con adjuntos."
                 QMessageBox.information(self, "Exportación", mensaje)
             else:
-                QMessageBox.warning(
-                    self, "Error PDF", f"No se pudo exportar PDF:  {msg}"
-                )
-        except Exception as e:
+                QMessageBox.warning(self, "Error PDF", f"No se pudo exportar PDF: {msg}")
+        
+        except Exception as e: 
             logger.exception(f"Error exportando PDF: {e}")
-            QMessageBox.warning(
-                self, "Error PDF", f"No se pudo exportar PDF: {e}"
-            )
+            QMessageBox.warning(self, "Error PDF", f"No se pudo exportar PDF: {e}")

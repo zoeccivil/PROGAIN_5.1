@@ -17,6 +17,10 @@ import logging
 from fpdf import FPDF
 from openpyxl. styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from pypdf import PdfWriter, PdfReader
+import io
+from PIL import Image
+from pypdf import PdfWriter, PdfReader
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +148,428 @@ class ReportGenerator:
                 except UnicodeEncodeError:
                     cleaned.append('?')
             return ''.join(cleaned)
+
+
+    def _crear_portada_anexo(self, trans:  dict, numero: int) -> str:
+        """
+        Crea una página de portada para un anexo. 
+        
+        Returns:
+            Ruta al archivo PDF temporal creado
+        """
+        import tempfile
+        
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='. pdf') as temp:
+                temp_path = temp.name
+            
+            pdf = PDF(orientation='P', unit='mm', format='Letter')
+            pdf.add_page()
+            
+            # Título del anexo
+            pdf.set_font('Arial', 'B', 18)
+            pdf.set_text_color(44, 62, 80)
+            pdf.cell(0, 15, f"ANEXO #{numero: 03d}", ln=True, align='C')
+            pdf.ln(5)
+            
+            # Línea separadora
+            pdf.set_draw_color(200, 200, 200)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(10)
+            
+            # Tabla de detalles
+            page_width = pdf.w - 2 * pdf.l_margin
+            col1_width = page_width * 0.30
+            col2_width = page_width * 0.70
+            
+            pdf.set_font('Arial', '', 10)
+            pdf.set_text_color(0, 0, 0)
+            
+            # Fondo alternado
+            row_bg_color = (245, 245, 245)
+            
+            detalles = [
+                ("Fecha:", trans.get('fecha', '')),
+                ("Descripción:", self._clean_text_for_pdf(trans.get('descripcion', '')[:80])),
+                ("Categoría:", self._clean_text_for_pdf(trans.get('categoria', ''))),
+                ("Subcategoría:", self._clean_text_for_pdf(trans.get('subcategoria', ''))),
+                ("Monto:", f"{self.currency} {trans.get('monto', 0):,.2f}"),
+                ("Adjuntos:", f"{len(trans.get('adjuntos_urls', []))} archivo(s)"),
+            ]
+            
+            for idx, (label, value) in enumerate(detalles):
+                if idx % 2 == 0:
+                    pdf.set_fill_color(*row_bg_color)
+                    fill = True
+                else:
+                    fill = False
+                
+                pdf.set_font('Arial', 'B', 10)
+                pdf.cell(col1_width, 8, label, border=1, fill=fill)
+                
+                pdf.set_font('Arial', '', 10)
+                if label == "Monto: ":
+                    pdf.set_text_color(192, 57, 43)  # Rojo para gastos
+                else:
+                    pdf.set_text_color(0, 0, 0)
+                
+                pdf.cell(col2_width, 8, str(value), border=1, ln=True, fill=fill)
+            
+            pdf.output(temp_path)
+            return temp_path
+        
+        except Exception as e: 
+            logger.error(f"Error creando portada de anexo:  {e}")
+            return None
+
+
+    def _descargar_adjunto_para_merger(self, adjunto_url: str) -> str:
+        """
+        Descarga un adjunto y devuelve la ruta local.
+        Simplificado para usar con pypdf.
+        
+        Returns:
+            Ruta al archivo local descargado, o None si falla
+        """
+        import tempfile
+        import os
+        from urllib.parse import urlparse, unquote
+        
+        try: 
+            # Extraer path del Storage
+            if 'firebasestorage. googleapis.com/v0/b/' in adjunto_url: 
+                parsed = urlparse(adjunto_url)
+                parts = parsed.path.split('/o/')
+                if len(parts) >= 2:
+                    storage_path = unquote(parts[1])
+                else:
+                    return None
+            
+            elif 'storage.googleapis.com' in adjunto_url:
+                parsed = urlparse(adjunto_url)
+                parts = parsed. path.split('/', 2)
+                if len(parts) >= 3:
+                    storage_path = unquote(parts[2]).split('? ')[0]
+                else: 
+                    return None
+            
+            elif adjunto_url.startswith('Proyecto/'):
+                storage_path = adjunto_url
+            
+            else:
+                logger.warning(f"Formato de URL no reconocido: {adjunto_url}")
+                return None
+            
+            # Generar URL pública
+            if not self. firebase_client: 
+                logger.error("FirebaseClient no disponible")
+                return None
+            
+            public_url = self.firebase_client.get_public_url_from_path(storage_path)
+            
+            # Obtener nombre de archivo
+            filename = os.path.basename(storage_path)
+            filename = filename.replace('? ', '_').replace('&', '_').replace('=', '_')
+            
+            # Descargar
+            from progain4. utils. attachment_downloader import download_attachment
+            
+            local_file = download_attachment(public_url, filename)
+            
+            if local_file and os.path.exists(local_file):
+                logger.debug(f"Descargado: {filename}")
+                return local_file
+            
+            return None
+        
+        except Exception as e: 
+            logger.error(f"Error descargando adjunto: {e}")
+            return None
+
+
+    def _imagen_a_pdf_temporal(self, imagen_path: str, titulo: str = "Anexo") -> str:
+        """
+        Convierte una imagen a PDF temporal.
+        
+        Args:
+            imagen_path:  Ruta a la imagen
+            titulo: Título para mostrar en el PDF
+        
+        Returns:
+            Ruta al PDF temporal creado
+        """
+        import tempfile
+        from PIL import Image
+        
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp:
+                temp_path = temp.name
+            
+            pdf = PDF(orientation='P', unit='mm', format='Letter')
+            pdf.add_page()
+            
+            # Título
+            pdf.set_font('Arial', 'B', 12)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 10, titulo, ln=True, align='C')
+            pdf.ln(5)
+            
+            # Calcular dimensiones
+            with Image.open(imagen_path) as img:
+                img_width_px, img_height_px = img. size
+            
+            # Convertir px a mm (96 DPI)
+            px_to_mm = 25.4 / 96
+            img_width_mm = img_width_px * px_to_mm
+            img_height_mm = img_height_px * px_to_mm
+            
+            # Ajustar a página
+            max_width = pdf.w - 30
+            max_height = pdf. h - 60
+            
+            scale_w = max_width / img_width_mm if img_width_mm > max_width else 1
+            scale_h = max_height / img_height_mm if img_height_mm > max_height else 1
+            scale = min(scale_w, scale_h)
+            
+            final_width = img_width_mm * scale
+            final_height = img_height_mm * scale
+            
+            # Centrar
+            x_pos = (pdf.w - final_width) / 2
+            y_pos = pdf.get_y()
+            
+            # Insertar imagen
+            pdf.image(imagen_path, x=x_pos, y=y_pos, w=final_width)
+            
+            pdf.output(temp_path)
+            return temp_path
+        
+        except Exception as e: 
+            logger.error(f"Error convirtiendo imagen a PDF: {e}")
+            return None
+
+    def _crear_tabla_contenidos(self, transacciones:  list) -> str:
+        """
+        Crea una tabla de contenidos con enlaces clickeables.
+        
+        Returns:
+            Ruta al PDF temporal de la tabla de contenidos
+        """
+        import tempfile
+        from fpdf import FPDF
+        
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp:
+                temp_path = temp. name
+            
+            pdf = FPDF(orientation='P', unit='mm', format='Letter')
+            pdf.add_page()
+            
+            # Título
+            pdf.set_font('Arial', 'B', 18)
+            pdf.set_text_color(44, 62, 80)
+            pdf.cell(0, 15, "TABLA DE CONTENIDOS - ANEXOS", ln=True, align='C')
+            pdf.ln(5)
+            
+            # Línea separadora
+            pdf.set_draw_color(200, 200, 200)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(8)
+            
+            # Tabla
+            pdf.set_font('Arial', '', 10)
+            pdf.set_text_color(0, 0, 0)
+            
+            page_width = pdf.w - 2 * pdf.l_margin
+            col_widths = [15, 25, 95, 45]
+            
+            # Header
+            pdf.set_fill_color(44, 62, 80)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font('Arial', 'B', 9)
+            
+            headers = ["#", "Fecha", "Descripción", "Monto"]
+            for i, header in enumerate(headers):
+                pdf.cell(col_widths[i], 8, header, border=1, align='C', fill=True)
+            pdf.ln()
+            
+            # Filas
+            pdf.set_font('Arial', '', 9)
+            pdf.set_text_color(0, 0, 0)
+            
+            for idx, trans in enumerate(transacciones, 1):
+                # Alternar color de fondo
+                if idx % 2 == 0:
+                    pdf.set_fill_color(245, 245, 245)
+                    fill = True
+                else:
+                    fill = False
+                
+                # Número
+                pdf.cell(col_widths[0], 7, str(idx), border=1, align='C', fill=fill)
+                
+                # Fecha
+                fecha = trans.get('fecha', '')
+                pdf.cell(col_widths[1], 7, fecha, border=1, align='C', fill=fill)
+                
+                # Descripción
+                descripcion = self._clean_text_for_pdf(trans.get('descripcion', '')[:40])
+                pdf.cell(col_widths[2], 7, descripcion, border=1, align='L', fill=fill)
+                
+                # Monto
+                monto = trans.get('monto', 0)
+                pdf.set_text_color(192, 57, 43)
+                pdf.cell(col_widths[3], 7, f"{self.currency} {monto:,.2f}", border=1, align='R', fill=fill)
+                pdf.set_text_color(0, 0, 0)
+                
+                pdf.ln()
+            
+            # Footer
+            pdf.ln(5)
+            pdf.set_font('Arial', 'I', 8)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 5, f"Total de anexos: {len(transacciones)}", align='C')
+            
+            pdf.output(temp_path)
+            return temp_path
+        
+        except Exception as e: 
+            logger.error(f"Error creando tabla de contenidos: {e}")
+            return None
+
+
+    def _crear_portada_anexo_con_miniatura(self, trans:  dict, numero:  int) -> str:
+        """
+        Crea portada de anexo con miniatura del primer adjunto.
+        
+        Returns:
+            Ruta al PDF temporal
+        """
+        import tempfile
+        from fpdf import FPDF
+        from PIL import Image
+        import os
+        
+        try: 
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp:
+                temp_path = temp.name
+            
+            pdf = FPDF(orientation='P', unit='mm', format='Letter')
+            pdf.add_page()
+            
+            # Título
+            pdf.set_font('Arial', 'B', 18)
+            pdf.set_text_color(44, 62, 80)
+            pdf.cell(0, 15, f"ANEXO #{numero: 03d}", ln=True, align='C')
+            pdf.ln(3)
+            
+            # Línea separadora
+            pdf.set_draw_color(200, 200, 200)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(8)
+            
+            # ========== MINIATURA ==========
+            adjuntos_urls = trans.get('adjuntos_urls', [trans.get('adjunto_url')])
+            
+            if adjuntos_urls and adjuntos_urls[0]: 
+                try:
+                    # Descargar primer adjunto
+                    local_file = self._descargar_adjunto_para_merger(adjuntos_urls[0])
+                    
+                    if local_file:
+                        ext = os.path.splitext(local_file)[1].lower()
+                        
+                        # Solo mostrar miniatura si es imagen
+                        if ext in ['. jpg', '.jpeg', '.png', '.gif', '.bmp']: 
+                            # Miniatura centrada
+                            max_thumb_width = 60
+                            max_thumb_height = 60
+                            
+                            with Image.open(local_file) as img:
+                                thumb_w_px, thumb_h_px = img. size
+                            
+                            px_to_mm = 25.4 / 96
+                            thumb_w_mm = thumb_w_px * px_to_mm
+                            thumb_h_mm = thumb_h_px * px_to_mm
+                            
+                            scale_w = max_thumb_width / thumb_w_mm if thumb_w_mm > max_thumb_width else 1
+                            scale_h = max_thumb_height / thumb_h_mm if thumb_h_mm > max_thumb_height else 1
+                            scale = min(scale_w, scale_h)
+                            
+                            final_w = thumb_w_mm * scale
+                            final_h = thumb_h_mm * scale
+                            
+                            # Centrar miniatura
+                            x_thumb = (pdf.w - final_w) / 2
+                            y_thumb = pdf.get_y()
+                            
+                            # Fondo gris claro
+                            pdf.set_fill_color(245, 245, 245)
+                            pdf.rect(x_thumb - 2, y_thumb - 2, final_w + 4, final_h + 4, 'F')
+                            
+                            pdf.image(local_file, x=x_thumb, y=y_thumb, w=final_w)
+                            pdf.set_y(y_thumb + final_h + 6)
+                            
+                            # Limpieza
+                            try:
+                                os.unlink(local_file)
+                            except:
+                                pass
+                        
+                        elif ext == '.pdf':
+                            # Ícono de PDF
+                            pdf. set_font('Arial', 'B', 48)
+                            pdf.set_text_color(220, 38, 38)
+                            pdf.cell(0, 30, "PDF", ln=True, align='C')
+                            pdf.ln(5)
+                
+                except Exception as e: 
+                    logger.debug(f"No se pudo generar miniatura: {e}")
+            
+            # ========== DETALLES ==========
+            pdf.ln(5)
+            page_width = pdf.w - 2 * pdf.l_margin
+            col1_width = page_width * 0.30
+            col2_width = page_width * 0.70
+            
+            pdf.set_font('Arial', '', 10)
+            pdf.set_text_color(0, 0, 0)
+            
+            row_bg_color = (245, 245, 245)
+            
+            detalles = [
+                ("Fecha:", trans.get('fecha', '')),
+                ("Descripción:", self._clean_text_for_pdf(trans.get('descripcion', '')[:80])),
+                ("Categoría:", self._clean_text_for_pdf(trans.get('categoria', ''))),
+                ("Subcategoría:", self._clean_text_for_pdf(trans.get('subcategoria', ''))),
+                ("Monto:", f"{self.currency} {trans.get('monto', 0):,.2f}"),
+                ("Adjuntos:", f"{len(adjuntos_urls)} archivo(s)"),
+            ]
+            
+            for idx, (label, value) in enumerate(detalles):
+                if idx % 2 == 0:
+                    pdf.set_fill_color(*row_bg_color)
+                    fill = True
+                else:
+                    fill = False
+                
+                pdf.set_font('Arial', 'B', 10)
+                pdf.cell(col1_width, 8, label, border=1, fill=fill)
+                
+                pdf.set_font('Arial', '', 10)
+                if label == "Monto: ":
+                    pdf.set_text_color(192, 57, 43)
+                else:
+                    pdf.set_text_color(0, 0, 0)
+                
+                pdf.cell(col2_width, 8, str(value), border=1, ln=True, fill=fill)
+            
+            pdf.output(temp_path)
+            return temp_path
+        
+        except Exception as e: 
+            logger.error(f"Error creando portada con miniatura: {e}")
+            return None
 
     def _procesar_adjunto_para_pdf(self, pdf, adjunto_url:   str, max_width: float, max_height: float) -> bool:
         """
@@ -291,7 +717,7 @@ class ReportGenerator:
                     return False
             
             # === PROCESAR PDF ===
-            elif ext == '. pdf':
+            elif ext == '.pdf':
                 pdf2image_available = False
                 try: 
                     from pdf2image import convert_from_path  # type: ignore[import]
@@ -755,7 +1181,7 @@ class ReportGenerator:
                                 ext = os.path.splitext(filename)[1].lower()
                                 
                                 # === PROCESAR PDF ===
-                                if ext == '. pdf':
+                                if ext == '.pdf':
                                     pdf.set_font('Arial', 'B', 10)
                                     pdf.set_text_color(39, 174, 96)
                                     clean_pdf_label = self._clean_text_for_pdf(f"[Adj] {filename} (PDF)")
@@ -1097,37 +1523,50 @@ class ReportGenerator:
         """
         return self.to_pdf(filepath)
 
-    def to_pdf_gastos_por_categoria(self, filepath=None, transacciones_anexos=None):
+    def to_pdf_gastos_por_categoria(self, filepath=None, transacciones_anexos=None, progress_callback=None):
         """
-        Genera PDF de Gastos por Categoría con estructura jerárquica única.  
-        
-        ✅ NUEVO: Incluye sección de ANEXOS con transacciones que tienen adjuntos. 
+        Genera PDF de Gastos por Categoría con miniaturas, TOC y progreso.
         
         Args:
             filepath:  Ruta del archivo PDF a generar
-            transacciones_anexos: Lista de diccionarios con transacciones que tienen adjuntos
-                                Estructura esperada: 
-                                [{
-                                    "numero": 1,
-                                    "id":  "transaction_id",
-                                    "fecha": "2026-01-20",
-                                    "descripcion": "Descripción",
-                                    "categoria": "Nombre Categoría",
-                                    "subcategoria": "Nombre Subcategoría",
-                                    "monto": 1000.00,
-                                    "adjunto_url": "https://..."
-                                }, ...]
+            transacciones_anexos: Lista de transacciones con adjuntos
+            progress_callback:  Función callback(step, status, detail) para actualizar progreso
         
         Returns:
             Tuple (success:  bool, error_message: str or None)
         """
-        if self.df.empty: 
+        if self.df. empty:
             return False, "No hay datos."
-        if not filepath:  
+        if not filepath:
             return False, "Falta ruta."
         
+        import tempfile
+        import os
+        import pandas as pd
+        
+        temp_files = []
+        
+        def update_progress(step, status, detail=""):
+            """Helper para actualizar progreso."""
+            if progress_callback:
+                progress_callback(step, status, detail)
+        
         try:
-            pdf = PDF(orientation='P', unit='mm', format='Letter')
+            # Calcular pasos totales
+            num_anexos = len(transacciones_anexos) if transacciones_anexos else 0
+            total_steps = 3 + num_anexos  # Reporte + TOC + Anexos + Merge
+            current_step = 0
+            
+            update_progress(current_step, "Generando reporte principal.. .", "")
+            
+            # ========== FASE 1: GENERAR REPORTE PRINCIPAL ==========
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_report:
+                temp_report_path = temp_report.name
+                temp_files.append(temp_report_path)
+            
+            from fpdf import FPDF
+            
+            pdf = FPDF(orientation='P', unit='mm', format='Letter')
             pdf.set_auto_page_break(auto=True, margin=18)
             pdf.add_page()
             page_width = pdf.w - 2 * pdf.l_margin
@@ -1141,35 +1580,28 @@ class ReportGenerator:
             COLOR_FONT_SUB = (44, 62, 80)
 
             # Header
-            try:  
-                pdf.set_font("Arial", "B", 16)
-            except:  
-                pdf.set_font("Helvetica", "B", 16)
-            
+            pdf.set_font("Arial", "B", 16)
             pdf.set_text_color(44, 62, 80)
-            pdf.cell(page_width, 10, f"Gastos por Categoría - {self.project_name}", ln=True, align='C')
+            pdf.cell(page_width, 10, f"Gastos por Categoria - {self.project_name}", ln=True, align='C')
             pdf.set_font("Arial", "", 11)
             pdf.cell(page_width, 8, f"Periodo: {self.date_range}", ln=True, align='C')
             pdf.ln(5)
 
             df = self.df.copy()
             
-            # Convertir monto a numérico
             if "Monto" in df.columns:
                 df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0)
 
-            # Filtrar categorías principales
             df_cats = df[(df["Subcategoría"]. isnull()) | (df["Subcategoría"] == "") | (df["Subcategoría"] == None)]
             categorias = df_cats[df_cats["Categoría"] != "TOTAL GENERAL"]
             total_general = 0.0
 
-            # ========== SECCIÓN 1: RESUMEN POR CATEGORÍA/SUBCATEGORÍA ==========
+            # Renderizar categorías
             for _, cat_row in categorias.iterrows():
                 cat = cat_row["Categoría"]
                 total_categoria = cat_row["Monto"]
                 total_general += total_categoria
 
-                # Categoría header
                 pdf.set_fill_color(*COLOR_BG_CAT)
                 pdf.set_text_color(*COLOR_FONT_CAT)
                 pdf.set_font("Arial", "B", 12)
@@ -1179,10 +1611,9 @@ class ReportGenerator:
                 pdf.cell(int(page_width * 0.35), 9, f"{self.currency} {total_categoria:,.2f} ", border=0, align='R', fill=True)
                 pdf.ln()
 
-                # Subcategorías
                 subcats = df[(df["Categoría"] == cat) & (df["Subcategoría"].notnull()) & (df["Subcategoría"] != "")]
                 pdf.set_font("Arial", "", 10)
-                for _, sub_row in subcats.iterrows():
+                for _, sub_row in subcats. iterrows():
                     pdf.set_fill_color(*COLOR_BG_SUB)
                     pdf.set_text_color(*COLOR_FONT_SUB)
                     
@@ -1201,173 +1632,105 @@ class ReportGenerator:
             pdf.cell(int(page_width * 0.65), 12, " TOTAL GENERAL", border=0, align='L', fill=True)
             pdf.cell(int(page_width * 0.35), 12, f"{self.currency} {total_general:,.2f} ", border=0, align='R', fill=True)
             
-            # ========== SECCIÓN 2: ANEXOS CON ADJUNTOS ==========
+            pdf.output(temp_report_path)
+            
+            current_step += 1
+            update_progress(current_step, "Reporte principal completado", "Preparando tabla de contenidos...")
+            
+            # ========== FASE 2: CREAR TABLA DE CONTENIDOS ==========
+            toc_path = None
             if transacciones_anexos and len(transacciones_anexos) > 0:
-                logger.info(f"📎 Agregando {len(transacciones_anexos)} anexos al PDF")
-                
-                # Nueva página para anexos
-                pdf.add_page()
-                
-                # Título de sección
-                pdf.set_font('Arial', 'B', 18)
-                pdf.set_text_color(44, 62, 80)
-                pdf.cell(0, 12, 'ANEXOS', ln=True, align='C')
-                pdf.ln(3)
-                
-                # Línea separadora
-                pdf.set_draw_color(200, 200, 200)
-                pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-                pdf.ln(8)
-                
-                # Procesar cada anexo
-                for trans in transacciones_anexos:
+                toc_path = self._crear_tabla_contenidos(transacciones_anexos)
+                if toc_path:
+                    temp_files.append(toc_path)
+            
+            current_step += 1
+            update_progress(current_step, "Tabla de contenidos creada", "Procesando anexos...")
+            
+            # ========== FASE 3: AGREGAR ANEXOS CON MINIATURAS ==========
+            from pypdf import PdfWriter, PdfReader
+            
+            merger = PdfWriter()
+            merger.append(PdfReader(temp_report_path, strict=False))
+            
+            if toc_path:
+                merger.append(PdfReader(toc_path, strict=False))
+            
+            if transacciones_anexos and len(transacciones_anexos) > 0:
+                for idx, trans in enumerate(transacciones_anexos, 1):
+                    current_step += 1
+                    descripcion = trans.get('descripcion', '')[: 30]
+                    update_progress(
+                        current_step, 
+                        f"Procesando anexo {idx}/{num_anexos}",
+                        f"{descripcion}..."
+                    )
+                    
                     try:
-                        # Verificar si cabe en la página actual (reservar espacio mínimo)
-                        if pdf.get_y() > (pdf.h - 100):  # Si quedan menos de 100mm, nueva página
-                            pdf.add_page()
+                        # Crear portada con miniatura
+                        portada_anexo = self._crear_portada_anexo_con_miniatura(trans, idx)
+                        if portada_anexo:
+                            temp_files.append(portada_anexo)
+                            merger.append(PdfReader(portada_anexo, strict=False))
                         
-                        # === ENCABEZADO DEL ANEXO ===
-                        pdf.set_font('Arial', 'B', 14)
-                        pdf.set_fill_color(52, 73, 94)  # Azul oscuro
-                        pdf.set_text_color(255, 255, 255)
-                        pdf.cell(0, 10, f"  ANEXO #{trans['numero']: 03d}", ln=True, fill=True)
-                        pdf. ln(2)
+                        # Procesar adjuntos
+                        adjuntos_urls = trans.get('adjuntos_urls', [trans.get('adjunto_url')])
                         
-                        # === TABLA DE DETALLES ===
-                        pdf.set_font('Arial', '', 10)
-                        pdf. set_text_color(0, 0, 0)
-                        
-                        # Ancho de las columnas (etiqueta:  30%, valor: 70%)
-                        col1_width = page_width * 0.30
-                        col2_width = page_width * 0.70
-                        
-                        # Fondo alternado para filas
-                        row_bg_color = (245, 245, 245)
-                        
-                        # Fila:  Fecha
-                        pdf.set_fill_color(*row_bg_color)
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf.cell(col1_width, 7, "Fecha:", border=1, fill=True)
-                        pdf. set_font('Arial', '', 10)
-                        pdf.cell(col2_width, 7, trans['fecha'], border=1, ln=True)
-                        
-                        # Fila:  Descripción
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf.cell(col1_width, 7, "Descripción:", border=1)
-                        pdf.set_font('Arial', '', 10)
-                        clean_desc = self._clean_text_for_pdf(trans['descripcion'])
-                        pdf.cell(col2_width, 7, clean_desc, border=1, ln=True)
-                        
-                        # Fila:  Categoría
-                        pdf.set_fill_color(*row_bg_color)
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf. cell(col1_width, 7, "Categoría:", border=1, fill=True)
-                        pdf.set_font('Arial', '', 10)
-                        clean_cat = self._clean_text_for_pdf(trans['categoria'])
-                        pdf. cell(col2_width, 7, clean_cat, border=1, fill=True, ln=True)
-                        
-                        # Fila:  Subcategoría
-                        pdf. set_font('Arial', 'B', 10)
-                        pdf.cell(col1_width, 7, "Subcategoría:", border=1)
-                        pdf.set_font('Arial', '', 10)
-                        clean_subcat = self._clean_text_for_pdf(trans['subcategoria'])
-                        pdf.cell(col2_width, 7, clean_subcat, border=1, ln=True)
-                        
-                        # Fila:  Monto
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf.cell(col1_width, 7, "Monto:", border=1)
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf.set_text_color(192, 57, 43)
-                        pdf.cell(col2_width, 7, f"{self.currency} {trans['monto']: ,.2f}", border=1, ln=True)
-                        pdf.set_text_color(0, 0, 0)
-
-                        # ��� NUEVO: Fila - Adjuntos
-                        adjuntos_count = len(trans.get('adjuntos_urls', []))
-                        pdf.set_fill_color(*row_bg_color)
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf.cell(col1_width, 7, "Adjuntos:", border=1, fill=True)
-                        pdf.set_font('Arial', '', 10)
-                        pdf.cell(col2_width, 7, f"{adjuntos_count} archivo(s)", border=1, fill=True, ln=True)
-
-                        pdf.ln(5)
-                        
-                        # === ADJUNTO ===
-                        pdf.set_font('Arial', 'B', 11)
-                        pdf.cell(0, 7, "Adjunto:", ln=True)
-                        pdf.ln(2)
-                        
-                        # Descargar y procesar adjunto
-                        # ✅ CORREGIDO:  Procesar TODOS los adjuntos (puede haber múltiples)
-                        adjuntos_urls = trans. get('adjuntos_urls', [trans. get('adjunto_url')])  # Usar lista completa
-
-                        if not adjuntos_urls:
-                            pdf.set_font('Arial', '', 9)
-                            pdf.set_text_color(192, 57, 43)
-                            pdf.cell(0, 6, "[X] Sin adjuntos", ln=True)
-                        else:
-                            for idx_adj, adjunto_url in enumerate(adjuntos_urls, 1):
-                                # Indicar número de adjunto si hay múltiples
-                                if len(adjuntos_urls) > 1:
-                                    pdf.set_font('Arial', 'B', 10)
-                                    pdf.set_text_color(100, 100, 100)
-                                    pdf.cell(0, 6, f"Adjunto {idx_adj} de {len(adjuntos_urls)}:", ln=True)
-                                    pdf.ln(2)
+                        for adj_idx, adjunto_url in enumerate(adjuntos_urls, 1):
+                            try:
+                                local_file = self._descargar_adjunto_para_merger(adjunto_url)
                                 
-                                # Procesar adjunto
-                                adjunto_procesado = self._procesar_adjunto_para_pdf(
-                                    pdf=pdf,
-                                    adjunto_url=adjunto_url,
-                                    max_width=page_width,
-                                    max_height=150
-                                )
+                                if not local_file:
+                                    continue
                                 
-                                if not adjunto_procesado:
-                                    # Si falla, mostrar enlace
-                                    pdf.set_font('Arial', '', 9)
-                                    pdf.set_text_color(192, 57, 43)
-                                    pdf.cell(0, 6, f"[X] Error descargando adjunto #{idx_adj}", ln=True)
-                                    pdf.set_text_color(0, 0, 255)
-                                    clean_url = self._clean_text_for_pdf(adjunto_url[: 80])
-                                    pdf.cell(0, 6, f"Ver en línea: {clean_url}.. .", ln=True, link=adjunto_url)
-                                    pdf.set_text_color(0, 0, 0)
+                                temp_files.append(local_file)
+                                ext = os.path.splitext(local_file)[1].lower()
                                 
-                                # Espacio entre adjuntos (si hay múltiples)
-                                if idx_adj < len(adjuntos_urls):
-                                    pdf.ln(3)
-                        
-                        if not adjunto_procesado:
-                            # Si falla, mostrar enlace
-                            pdf.set_font('Arial', '', 9)
-                            pdf.set_text_color(192, 57, 43)
-                            pdf.cell(0, 6, "[X] Error descargando adjunto", ln=True)
-                            pdf.set_text_color(0, 0, 255)
-                            clean_url = self._clean_text_for_pdf(trans['adjunto_url'])
-                            pdf.cell(0, 6, f"Ver en línea: {clean_url[: 80]}...", ln=True, link=trans['adjunto_url'])
-                            pdf.set_text_color(0, 0, 0)
-                        
-                        # Espacio antes del siguiente anexo
-                        pdf.ln(10)
-                        
-                        # Línea separadora
-                        pdf. set_draw_color(200, 200, 200)
-                        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-                        pdf.ln(5)
-                        
+                                if ext == '.pdf':
+                                    merger. append(PdfReader(local_file, strict=False))
+                                    logger.info(f"✅ PDF anexo #{idx}-{adj_idx} agregado")
+                                
+                                elif ext in ['.jpg', '.jpeg', '. png', '.gif', '.bmp']:
+                                    temp_img_pdf = self._imagen_a_pdf_temporal(
+                                        local_file, 
+                                        f"Anexo #{idx} - Adjunto {adj_idx}"
+                                    )
+                                    
+                                    if temp_img_pdf:
+                                        temp_files.append(temp_img_pdf)
+                                        merger.append(PdfReader(temp_img_pdf, strict=False))
+                                        logger.info(f"✅ Imagen anexo #{idx}-{adj_idx} agregada")
+                            
+                            except Exception as e: 
+                                logger.error(f"Error procesando adjunto:  {e}")
+                    
                     except Exception as e:
-                        logger.error(f"Error procesando anexo #{trans. get('numero', '?')}: {e}")
-                        pdf.set_font('Arial', '', 10)
-                        pdf.set_text_color(192, 57, 43)
-                        pdf.cell(0, 7, f"[X] Error procesando anexo #{trans.get('numero', '?')}", ln=True)
-                        pdf.set_text_color(0, 0, 0)
-                        pdf.ln(5)
+                        logger.error(f"Error procesando transacción: {e}")
             
-            pdf.output(filepath)
+            # ========== FASE 4: ESCRIBIR PDF FINAL ==========
+            update_progress(total_steps - 1, "Finalizando PDF...", "Guardando archivo...")
+            
+            with open(filepath, 'wb') as f_out:
+                merger.write(f_out)
+            
+            update_progress(total_steps, "¡Completado!", f"PDF guardado:  {os.path.basename(filepath)}")
+            
+            logger.info(f"✅ PDF generado exitosamente: {filepath}")
             return True, None
-            
+        
         except Exception as e:
-            logger.exception(f"Error generando PDF de gastos por categoría: {e}")
+            logger. exception(f"Error generando PDF: {e}")
             return False, str(e)
+        
+        finally:
+            for temp_file in temp_files: 
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except:
+                    pass
 
+                
     def dashboard_to_pdf(self, filepath, figures, order=None):
         """
         Exporta un dashboard completo a PDF:  
