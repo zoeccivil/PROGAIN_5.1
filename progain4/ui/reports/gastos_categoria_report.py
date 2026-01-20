@@ -428,6 +428,110 @@ class GastosPorCategoriaWindowFirebase(QMainWindow):
         ancho_base = 400
         self.tree.setColumnWidth(0, ancho_base)
 
+    def _get_transacciones_con_adjuntos(self) -> List[Dict[str, Any]]:
+        """
+        Obtiene todas las transacciones del rango de fechas que tienen adjuntos.
+        
+        Returns:
+            Lista de diccionarios con:   
+            - numero: Número secuencial de transacción
+            - id: ID de la transacción
+            - fecha: Fecha de la transacción
+            - descripcion: Descripción
+            - categoria:  Nombre de categoría
+            - subcategoria: Nombre de subcategoría
+            - monto:  Monto
+            - adjunto_url: URL del adjunto en Firebase Storage (primera URL si hay múltiples)
+            - adjuntos_urls: Lista completa de URLs (si hay múltiples)
+        """
+        try:
+            # Rango de fechas
+            qdesde = self.date_desde. date()
+            qhasta = self.date_hasta. date()
+            desde_date = qdesde.toPyDate()
+            hasta_date = qhasta.toPyDate()
+            
+            # Catálogos
+            categorias = self.firebase_client.get_categorias_by_proyecto(self.proyecto_id)
+            subcategorias = self.firebase_client.get_subcategorias_by_proyecto(self.proyecto_id)
+            
+            cat_by_id = {str(c["id"]): c.get("nombre", "Sin categoría") for c in categorias}
+            subcat_by_id = {str(s["id"]): s.get("nombre", "Sin subcategoría") for s in subcategorias}
+            
+            # Transacciones
+            if self._all_transacciones is None:
+                self._all_transacciones = self.firebase_client.get_transacciones_by_proyecto(
+                    self.proyecto_id
+                )
+            transacciones = self._all_transacciones or []
+            
+            logger.info(f"🔍 Total transacciones obtenidas: {len(transacciones)}")
+            
+            # Filtrar transacciones con adjuntos en el rango de fechas
+            resultado = []
+            numero = 1
+            
+            for t in transacciones:
+                # Solo gastos
+                tipo = str(t.get("tipo", "")).lower()
+                if tipo != "gasto":
+                    continue
+                
+                # Verificar fecha
+                fecha_date = self._parse_date(t.get("fecha"))
+                if not fecha_date or not (desde_date <= fecha_date <= hasta_date):
+                    continue
+                
+                # ✅ CORREGIDO: Buscar adjuntos en el campo correcto
+                adjuntos_urls = t.get("adjuntos", [])  # Lista de URLs completas
+                
+                # Validar que sea lista y no esté vacía
+                if not isinstance(adjuntos_urls, list) or len(adjuntos_urls) == 0:
+                    continue
+                
+                # Filtrar URLs vacías
+                adjuntos_urls = [url for url in adjuntos_urls if url and str(url).strip()]
+                
+                if not adjuntos_urls: 
+                    continue
+                
+                # Obtener nombres de categoría y subcategoría
+                categoria_id = str(t.get("categoria_id", ""))
+                subcategoria_id = str(t.get("subcategoria_id", "")) if t.get("subcategoria_id") else None
+                
+                categoria_nombre = cat_by_id.get(categoria_id, "Sin categoría")
+                subcategoria_nombre = subcat_by_id.get(subcategoria_id, "Sin subcategoría") if subcategoria_id else "Sin subcategoría"
+                
+                # Agregar a resultado
+                resultado.append({
+                    "numero": numero,
+                    "id": str(t. get("id", "")),
+                    "fecha": fecha_date. strftime("%Y-%m-%d"),
+                    "descripcion": str(t.get("descripcion", "Sin descripción"))[:100],
+                    "categoria":  categoria_nombre,
+                    "subcategoria": subcategoria_nombre,
+                    "monto": float(t.get("monto", 0.0)),
+                    "adjunto_url": adjuntos_urls[0],  # Primera URL para compatibilidad
+                    "adjuntos_urls": adjuntos_urls,   # ✅ NUEVO: Lista completa de URLs
+                })
+                
+                logger.debug(f"Transacción #{numero} con {len(adjuntos_urls)} adjunto(s): {t.get('descripcion', '')}")
+                numero += 1
+            
+            logger.info(f"✅ Encontradas {len(resultado)} transacciones con adjuntos en el rango de fechas")
+            return resultado
+            
+        except Exception as e:
+            logger. error(f"Error obteniendo transacciones con adjuntos: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
+
+
+
+
+
     # ------------------------------------------------------------------ Export
 
     def exportar_excel(self):
@@ -481,7 +585,11 @@ class GastosPorCategoriaWindowFirebase(QMainWindow):
             )
 
     def exportar_pdf(self):
-        """Exporta usando ReportGenerator.to_pdf_gastos_por_categoria."""
+        """
+        Exporta usando ReportGenerator. to_pdf_gastos_por_categoria. 
+        
+        ✅ CORREGIDO: Pasa firebase_client y proyecto_id para adjuntos. 
+        """
         if not self._export_rows:
             QMessageBox.warning(self, "Sin datos", "No hay datos para exportar.")
             return
@@ -492,22 +600,27 @@ class GastosPorCategoriaWindowFirebase(QMainWindow):
             f"{self.proyecto_nombre}_gastos_categoria.pdf",
             "Archivos PDF (*.pdf)",
         )
-        if not ruta_archivo:
+        if not ruta_archivo: 
             return
 
         try:
-            # Aseguramos importación del servicio corregido
             from progain4.services.report_generator import ReportGenerator
 
             date_range = (
-                f"{self.date_desde.date().toString('dd/MM/yyyy')} - "
+                f"{self.date_desde. date().toString('dd/MM/yyyy')} - "
                 f"{self.date_hasta.date().toString('dd/MM/yyyy')}"
             )
 
+            # ✅ NUEVO: Obtener transacciones con adjuntos
+            transacciones_con_adjuntos = self._get_transacciones_con_adjuntos()
+            
+            logger.info(f"Generando PDF con {len(transacciones_con_adjuntos)} transacciones con adjuntos")
+
+            # ✅ CORREGIDO: Pasar firebase_client y proyecto_id
             rg = ReportGenerator(
                 data=self._export_rows,
                 title="Gastos por Categoría",
-                project_name=self.proyecto_nombre,
+                project_name=self. proyecto_nombre,
                 date_range=date_range,
                 currency_symbol=self.moneda,
                 column_map={
@@ -515,21 +628,27 @@ class GastosPorCategoriaWindowFirebase(QMainWindow):
                     "Subcategoría": "Subcategoría",
                     "Monto": "Monto",
                 },
+                firebase_client=self.firebase_client,  # ✅ AGREGAR
+                proyecto_id=self.proyecto_id,          # ✅ AGREGAR
             )
             
-            # Mantenemos la llamada específica al método de reporte por categoría
-            # que ya tiene el formato de colores y agrupación ideal
-            ok, msg = rg.to_pdf_gastos_por_categoria(ruta_archivo)
+            # Pasar transacciones con adjuntos al generador
+            ok, msg = rg.to_pdf_gastos_por_categoria(
+                ruta_archivo,
+                transacciones_anexos=transacciones_con_adjuntos
+            )
             
             if ok:
-                QMessageBox.information(
-                    self, "Exportación", "Datos exportados a PDF correctamente."
-                )
+                mensaje = "Datos exportados a PDF correctamente."
+                if transacciones_con_adjuntos:
+                    mensaje += f"\n\n✅ Se incluyeron {len(transacciones_con_adjuntos)} anexos con adjuntos."
+                QMessageBox.information(self, "Exportación", mensaje)
             else:
                 QMessageBox.warning(
-                    self, "Error PDF", f"No se pudo exportar PDF: {msg}"
+                    self, "Error PDF", f"No se pudo exportar PDF:  {msg}"
                 )
         except Exception as e:
+            logger.exception(f"Error exportando PDF: {e}")
             QMessageBox.warning(
                 self, "Error PDF", f"No se pudo exportar PDF: {e}"
             )
