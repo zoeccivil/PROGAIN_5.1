@@ -32,6 +32,7 @@ from progain4.ui.dialogs.gestion_subcategorias_proyecto_dialog import GestionSub
 from progain4.ui.dialogs.gestion_presupuestos_dialog import GestionPresupuestosDialog
 from progain4.ui.dialogs.gestion_presupuestos_subcategorias_dialog import GestionPresupuestosSubcategoriasDialog
 from progain4.ui.dialogs. import_categories_dialog import ImportCategoriesDialog
+from progain4.ui.dialogs.duplicate_cleaner_dialog import DuplicateCleanerDialog
 
 # Dashboards
 from progain4.ui.dashboards.dashboard_gastos_avanzado_window_firebase import (
@@ -77,7 +78,7 @@ class MainWindow4(QMainWindow):
 
     def __init__(
         self,
-        firebase_client: FirebaseClient,
+        firebase_client:  FirebaseClient,
         proyecto_id: str,
         proyecto_nombre: str,
         config_manager: Optional[ConfigManager] = None
@@ -94,13 +95,13 @@ class MainWindow4(QMainWindow):
         self.current_proyecto_nombre = proyecto_nombre
         
         # ✅ NUEVO: Config manager para undo/redo
-        self.config_manager = config_manager
+        self. config_manager = config_manager
 
         # Data
-        self.cuentas: List[Dict[str, Any]] = []
+        self.cuentas:  List[Dict[str, Any]] = []
         self.categorias: List[Dict[str, Any]] = []
         self.subcategorias: List[Dict[str, Any]] = []
-        self.current_cuenta_id: Optional[str] = None
+        self. current_cuenta_id:  Optional[str] = None
         
         # Windows (for reuse)
         self.cashflow_window: Optional[CashflowWindow] = None
@@ -122,22 +123,22 @@ class MainWindow4(QMainWindow):
         self.setGeometry(100, 100, 1200, 700)
 
         self._init_ui()
-        self._load_projects()  # Load projects into combo
-        self._load_initial_data()
         
-        # ✅ NUEVO: Configurar sistema Undo/Redo
-        self.setup_edit_menu()
+        # ✅ NUEVO: Configurar undo/redo DESPUÉS de crear la UI
+        self.setup_undo_redo_in_existing_menu()  # ← CAMBIO CRÍTICO
         self.setup_undo_redo_shortcuts()
         self.setup_undo_redo_toolbar()
         self.update_undo_redo_state()
         
         logger.info(f"✅ Sistema Undo/Redo inicializado (límite: {self.undo_manager.max_stack_size} acciones)")
         
+        self._load_projects()
+        self._load_initial_data()
+        
         # Aplicar iconos iniciales según el tema actual (solo si está disponible)
         if IMPROVED_THEME_AVAILABLE:  
             current_theme = theme_manager.current_theme
             self._update_toolbar_icons(current_theme)
-
     # ------------------------------------------------------------------ UI INIT
 
     def _init_ui(self):
@@ -311,16 +312,25 @@ class MainWindow4(QMainWindow):
         # ========== HERRAMIENTAS MENU ==========
         herramientas_menu:  QMenu = menu_bar.addMenu("Herramientas")
 
-        action_auditoria = QAction("Auditoría de Categorías/Subcategorías...", self)
+        action_auditoria = QAction("Auditoría de Categorías/Subcategorías.. .", self)
         action_auditoria.triggered.connect(self._open_auditoria_categorias)
         herramientas_menu.addAction(action_auditoria)
+
+        herramientas_menu.addSeparator()
+
+        # ✅ NUEVO: Limpiador de duplicados
+        action_clean_dupes = QAction("🗑️ Limpiar Transacciones Duplicadas.. .", self)
+        if IMPROVED_THEME_AVAILABLE:
+            action_clean_dupes.setIcon(IconManager.get_icon("delete"))
+        action_clean_dupes.triggered. connect(self._open_duplicate_cleaner)
+        herramientas_menu. addAction(action_clean_dupes)
 
         herramientas_menu.addSeparator()
 
         action_import_trans = QAction("Importar Transacciones...", self)
         if IMPROVED_THEME_AVAILABLE:
             action_import_trans.setIcon(IconManager.get_icon("import_export"))
-        action_import_trans.triggered.connect(self._open_importar_transacciones)
+        action_import_trans. triggered.connect(self._open_importar_transacciones)
         herramientas_menu.addAction(action_import_trans)
 
     def _create_toolbar(self):
@@ -1204,84 +1214,119 @@ class MainWindow4(QMainWindow):
     # ------------------------------------------------------------------ UNDO/REDO SYSTEM
     
     def setup_edit_menu(self):
-        """Configure edit menu with undo/redo options"""
-        # Find existing Edit menu
+        """
+        Crea menú Editar con opciones de undo/redo. 
+        
+        ✅ CORREGIDO: Variables locales con nombres únicos para evitar conflictos. 
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         menubar = self.menuBar()
         edit_menu = None
         
-        for action in menubar.actions():
-            if action.text() == "Editar":
-                edit_menu = action.menu()
+        # Buscar si ya existe menú Editar
+        for existing_menu_action in menubar.actions():
+            if existing_menu_action. text() == "Editar":
+                edit_menu = existing_menu_action.menu()
+                logger.debug("Menú Editar encontrado, reutilizando")
                 break
         
+        # Si no existe, crearlo
         if not edit_menu:
             edit_menu = menubar.addMenu("Editar")
+            logger.debug("Menú Editar creado")
         
-        # Add undo/redo at the top of the menu
-        # Store existing actions
-        existing_actions = edit_menu.actions()
-        
-        # Clear menu
+        # Limpiar acciones previas si existen
         edit_menu.clear()
         
-        # Deshacer (Undo)
-        self.undo_action = QAction("Deshacer", self)
-        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
-        self.undo_action.triggered.connect(self.perform_undo)
+        # ========== DESHACER ==========
+        self. undo_action = QAction("Deshacer", self)
+        self.undo_action. setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self. perform_undo)
         self.undo_action.setEnabled(False)
         edit_menu.addAction(self.undo_action)
         
-        # Rehacer (Redo)
+        # ========== REHACER ==========
         self.redo_action = QAction("Rehacer", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self.perform_redo)
         self.redo_action.setEnabled(False)
         edit_menu.addAction(self.redo_action)
         
+        # Separador
         edit_menu.addSeparator()
         
-        # Historial
-        history_action = QAction("Ver historial de cambios...", self)
-        history_action.triggered.connect(self.show_undo_history)
-        edit_menu.addAction(history_action)
-        
-        edit_menu.addSeparator()
-        
-        # Re-add existing actions
-        for action in existing_actions:
-            edit_menu.addAction(action)
+        # ========== HISTORIAL ==========
+        self.history_action = QAction("Ver historial de cambios...", self)
+        self.history_action.triggered.connect(self. show_undo_history)
+        edit_menu.addAction(self.history_action)
         
         logger.info("✅ Menú Editar configurado con Undo/Redo")
     
     def setup_undo_redo_shortcuts(self):
-        """Setup keyboard shortcuts for undo/redo"""
-        # Shortcuts are already set in setup_edit_menu via QKeySequence.StandardKey
-        # This method is here for consistency with the problem statement
-        pass
+        """
+        Configura atajos de teclado globales para Undo/Redo.
+        
+        ✅ CORREGIDO: Ahora SÍ configura los shortcuts. 
+        """
+        from PyQt6.QtGui import QShortcut
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Ctrl+Z
+        self.undo_shortcut = QShortcut(QKeySequence.StandardKey. Undo, self)
+        self.undo_shortcut.activated. connect(self.perform_undo)
+        
+        # Ctrl+Y
+        self.redo_shortcut1 = QShortcut(QKeySequence.StandardKey. Redo, self)
+        self.redo_shortcut1.activated.connect(self.perform_redo)
+        
+        # Ctrl+Shift+Z (alternativo)
+        self.redo_shortcut2 = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self.redo_shortcut2.activated.connect(self.perform_redo)
+        
+        logger.info("✅ Shortcuts Undo/Redo configurados (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z)")
     
     def setup_undo_redo_toolbar(self):
-        """Setup toolbar buttons for undo/redo"""
-        # Find or create toolbar
-        toolbar = None
-        for child in self.children():
-            if isinstance(child, QToolBar):
-                toolbar = child
-                break
+        """
+        Agrega botones de Undo/Redo al toolbar EXISTENTE.
         
-        if not toolbar:
+        ✅ CORREGIDO:  Usa findChildren() para encontrar el toolbar. 
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Buscar toolbar existente
+        toolbars = self.findChildren(QToolBar)
+        
+        if not toolbars:
+            logger.warning("⚠️ No se encontró toolbar, creando nuevo")
             toolbar = self.addToolBar("Undo/Redo")
+        else:
+            toolbar = toolbars[0]  # Usar el primero
+            logger.debug(f"Usando toolbar existente: {toolbar.windowTitle()}")
         
-        # Add undo button
-        self.undo_button = QPushButton("⟲ Deshacer")
-        self.undo_button.clicked.connect(self.perform_undo)
-        self.undo_button.setEnabled(False)
-        toolbar.addWidget(self.undo_button)
+        # Agregar separador
+        toolbar.addSeparator()
         
-        # Add redo button
-        self.redo_button = QPushButton("⟳ Rehacer")
-        self.redo_button.clicked.connect(self.perform_redo)
-        self.redo_button.setEnabled(False)
-        toolbar.addWidget(self.redo_button)
+        # ========== BOTÓN DESHACER ==========
+        undo_action = QAction("⏪ Deshacer", self)
+        undo_action.triggered.connect(self.perform_undo)
+        undo_action.setEnabled(False)
+        toolbar.addAction(undo_action)
+        
+        # Guardar referencia (alternativa a self.undo_button)
+        self.undo_toolbar_action = undo_action
+        
+        # ========== BOTÓN REHACER ==========
+        redo_action = QAction("⏩ Rehacer", self)
+        redo_action.triggered.connect(self.perform_redo)
+        redo_action.setEnabled(False)
+        toolbar.addAction(redo_action)
+        
+        # Guardar referencia
+        self.redo_toolbar_action = redo_action
         
         logger.info("✅ Toolbar Undo/Redo configurado")
     
@@ -1328,24 +1373,24 @@ class MainWindow4(QMainWindow):
             logger.warning("❌ Redo falló")
     
     def update_undo_redo_state(self):
-        """Update state of undo/redo buttons/menus"""
+        """Actualiza estado de botones/menús de undo/redo"""
         can_undo = self.undo_manager.can_undo()
         can_redo = self.undo_manager.can_redo()
         
-        # Update menu actions
+        # Actualizar menú
         if hasattr(self, 'undo_action'):
             self.undo_action.setEnabled(can_undo)
             if can_undo:
                 desc = self.undo_manager.get_undo_description()
-                self.undo_action.setText(f"Deshacer: {desc[:40]}...")
+                self.undo_action.setText(f"Deshacer:  {desc[: 40]}...")
                 self.undo_action.setToolTip(f"Deshacer: {desc}")
             else:
                 self.undo_action.setText("Deshacer")
                 self.undo_action.setToolTip("Nada para deshacer")
         
         if hasattr(self, 'redo_action'):
-            self.redo_action.setEnabled(can_redo)
-            if can_redo:
+            self.redo_action. setEnabled(can_redo)
+            if can_redo: 
                 desc = self.undo_manager.get_redo_description()
                 self.redo_action.setText(f"Rehacer: {desc[:40]}...")
                 self.redo_action.setToolTip(f"Rehacer: {desc}")
@@ -1353,22 +1398,22 @@ class MainWindow4(QMainWindow):
                 self.redo_action.setText("Rehacer")
                 self.redo_action.setToolTip("Nada para rehacer")
         
-        # Update toolbar buttons if they exist
-        if hasattr(self, 'undo_button'):
-            self.undo_button.setEnabled(can_undo)
+        # ✅ ACTUALIZAR TOOLBAR (usar nombres correctos)
+        if hasattr(self, 'undo_toolbar_action'):
+            self.undo_toolbar_action.setEnabled(can_undo)
             if can_undo:
                 desc = self.undo_manager.get_undo_description()
-                self.undo_button.setToolTip(f"Deshacer: {desc}")
+                self.undo_toolbar_action.setToolTip(f"Deshacer: {desc}")
             else:
-                self.undo_button.setToolTip("Nada para deshacer")
+                self. undo_toolbar_action.setToolTip("Nada para deshacer")
         
-        if hasattr(self, 'redo_button'):
-            self.redo_button.setEnabled(can_redo)
+        if hasattr(self, 'redo_toolbar_action'):
+            self.redo_toolbar_action.setEnabled(can_redo)
             if can_redo:
-                desc = self.undo_manager.get_redo_description()
-                self.redo_button.setToolTip(f"Rehacer: {desc}")
+                desc = self. undo_manager.get_redo_description()
+                self.redo_toolbar_action.setToolTip(f"Rehacer: {desc}")
             else:
-                self.redo_button.setToolTip("Nada para rehacer")
+                self.redo_toolbar_action.setToolTip("Nada para rehacer")
         
         logger.debug(f"Estado Undo/Redo: can_undo={can_undo}, can_redo={can_redo}")
     
@@ -1412,3 +1457,91 @@ class MainWindow4(QMainWindow):
             message += "⏩ No hay acciones para rehacer\n"
         
         QMessageBox.information(self, "Historial de Cambios", message)
+
+    def setup_undo_redo_in_existing_menu(self):
+        """
+        Agrega opciones de Undo/Redo al menú Editar EXISTENTE. 
+        
+        ✅ NO borra las opciones existentes (cuentas, categorías, etc.)
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        menubar = self.menuBar()
+        edit_menu = None
+        
+        # Buscar menú Editar existente
+        for existing_menu_action in menubar.actions():
+            if existing_menu_action.text() == "Editar":
+                edit_menu = existing_menu_action. menu()
+                logger.debug("Menú Editar encontrado")
+                break
+        
+        if not edit_menu:
+            logger.warning("⚠️ Menú Editar no encontrado, creando nuevo")
+            edit_menu = menubar.addMenu("Editar")
+        
+        # ✅ INSERTAR al INICIO (sin borrar lo existente)
+        # Obtener primera acción existente
+        actions = edit_menu.actions()
+        first_action = actions[0] if actions else None
+        
+        # ========== DESHACER ==========
+        self.undo_action = QAction("Deshacer", self)
+        self.undo_action. setShortcut(QKeySequence.StandardKey. Undo)
+        self.undo_action.triggered.connect(self.perform_undo)
+        self.undo_action.setEnabled(False)
+        
+        if first_action:
+            edit_menu.insertAction(first_action, self.undo_action)
+        else:
+            edit_menu.addAction(self.undo_action)
+        
+        # ========== REHACER ==========
+        self. redo_action = QAction("Rehacer", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self.perform_redo)
+        self.redo_action.setEnabled(False)
+        
+        if first_action:
+            edit_menu.insertAction(first_action, self.redo_action)
+        else:
+            edit_menu.addAction(self.redo_action)
+        
+        # ========== SEPARADOR ==========
+        separator = edit_menu.insertSeparator(first_action) if first_action else edit_menu.addSeparator()
+        
+        # ========== HISTORIAL ==========
+        self.history_action = QAction("Ver historial de cambios.. .", self)
+        self.history_action.triggered.connect(self.show_undo_history)
+        
+        if first_action:
+            edit_menu.insertAction(separator, self.history_action)
+        else:
+            edit_menu.addAction(self.history_action)
+        
+        logger.info("✅ Menú Editar configurado con Undo/Redo (manteniendo opciones existentes)")
+
+    def _open_duplicate_cleaner(self):
+        """Abrir limpiador de duplicados."""
+        if not getattr(self, "proyecto_id", None):
+            QMessageBox.warning(self, "Error", "No hay un proyecto activo.")
+            return
+        
+        if not self.firebase_client. is_initialized():
+            QMessageBox.warning(self, "Firebase", "Firebase no está inicializado.")
+            return
+
+        logger.info(f"Opening duplicate cleaner for project {self.proyecto_id}")
+        
+        dlg = DuplicateCleanerDialog(
+            firebase_client=self.firebase_client,
+            proyecto_id=self.proyecto_id,
+            proyecto_nombre=self.proyecto_nombre_actual,
+            parent=self,
+        )
+        
+        # Refrescar transacciones si se eliminaron duplicados
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_transactions()
+            logger.info("Duplicate cleaner closed, transactions refreshed")
