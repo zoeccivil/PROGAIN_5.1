@@ -612,20 +612,20 @@ class ImporterWindowFirebaseQt(QDialog):
 
     def add_selected_to_project(self):
         """
-        Añade transacciones seleccionadas al proyecto. 
+        Añade transacciones seleccionadas al proyecto usando el sistema de comandos Undo/Redo.
         
-        ✅ CORREGIDO: Usa hash de la celda en lugar de índice del DataFrame. 
-        ✅ Detecta y advierte sobre duplicados en la selección.
+        ✅ CORREGIDO: Usa comandos en lugar de llamadas directas a Firebase.
+        ✅ Integrado con UndoRedoManager para permitir deshacer importaciones.
         """
         if self.df_data is None or self.df_data.empty:
             QMessageBox.warning(self, "Sin datos", "No hay transacciones cargadas.")
             return
         
         # ✅ OBTENER FILAS ÚNICAS SELECCIONADAS
-        selected_rows = sorted(list(set([i. row() for i in self.table.selectedIndexes()])))
+        selected_rows = sorted(list(set([i.row() for i in self.table.selectedIndexes()])))
         
         if not selected_rows:
-            QMessageBox. warning(self, "Aviso", "Selecciona al menos una fila para importar.")
+            QMessageBox.warning(self, "Aviso", "Selecciona al menos una fila para importar.")
             return
 
         # ✅ EXTRAER HASHES DE LAS FILAS SELECCIONADAS (desde la tabla, no del DataFrame)
@@ -641,7 +641,7 @@ class ImporterWindowFirebaseQt(QDialog):
             QMessageBox.warning(self, "Error", "No se pudieron obtener los hashes de las filas seleccionadas.")
             return
         
-        # ✅ NUEVO:  Detectar duplicados en selección
+        # ✅ NUEVO: Detectar duplicados en selección
         unique_hashes = list(set(selected_hashes))
         duplicates_count = len(selected_hashes) - len(unique_hashes)
         
@@ -649,7 +649,7 @@ class ImporterWindowFirebaseQt(QDialog):
         self.log(f"🔍 Hashes únicos: {len(unique_hashes)}")
         
         if duplicates_count > 0:
-            self.log(f"⚠️ ADVERTENCIA:  Hay {duplicates_count} transacciones duplicadas en tu selección")
+            self.log(f"⚠️ ADVERTENCIA: Hay {duplicates_count} transacciones duplicadas en tu selección")
             self.log(f"⚠️ Esto es normal si el banco registra la misma comisión múltiples veces")
             self.log(f"⚠️ Se eliminarán TODAS las filas con el mismo hash del DataFrame")
             self.log(f"")
@@ -659,7 +659,7 @@ class ImporterWindowFirebaseQt(QDialog):
 
         # Obtener valores de los combos
         c_nom = self.combo_cuenta.currentText()
-        c_id = self.cuentas_map. get(c_nom)
+        c_id = self.cuentas_map.get(c_nom)
         cat_nom = self.combo_categoria.currentText()
         cat_id = self.categorias_map.get(cat_nom)
         sub_nom = self.combo_subcategoria.currentText()
@@ -692,24 +692,23 @@ class ImporterWindowFirebaseQt(QDialog):
         count = 0
         err = 0
         hashes_remove = []
+        commands = []  # ✅ NUEVO: Lista de comandos para batch
 
         self.log(f"🔄 Procesando {len(selected_hashes)} transacciones únicas...")
         self.log(f"📍 Destino → Cuenta: {c_nom} (ID: {c_id}) | Categoría: {cat_nom} | Subcategoría: {sub_nom}")
         self.log(f"")
 
-        # ✅ PROCESAR USANDO HASHES (no índices)
+        # ✅ CREAR COMANDOS (NO ejecutar aún)
         for i, h in enumerate(selected_hashes, 1):
             try:
                 # ✅ BUSCAR FILA EN DATAFRAME POR HASH
                 matching_rows = self.df_data[self.df_data['row_hash'] == h]
                 
                 if matching_rows.empty:
-                    self.log(f"⚠️ Hash {h[: 12]}... no encontrado en DataFrame (ya eliminado? )")
+                    self.log(f"⚠️ Hash {h[:12]}... no encontrado en DataFrame (ya eliminado?)")
                     continue
                 
                 row = matching_rows.iloc[0]
-                
-                self.log(f"🔑 Transacción {i}/{len(selected_hashes)}: Hash = {h[:12]}...")
                 
                 # Construir descripción
                 desc = row['Detalle']
@@ -732,37 +731,80 @@ class ImporterWindowFirebaseQt(QDialog):
                     "categoriaNombre": cat_nom,
                     "subcategoria_id": str(sub_id),
                     "subcategoriaNombre": sub_nom,
-                    "tipo":  row["Tipo"],
-                    "descripcion": desc[: 200],
+                    "tipo": row["Tipo"],
+                    "descripcion": desc[:200],
                     "comentario": "Importado Automáticamente",
                     "monto": float(row["Monto"]),
-                    "fecha": row["Fecha_dt"]. strftime("%Y-%m-%d")
+                    "fecha": row["Fecha_dt"].strftime("%Y-%m-%d")
                 }
                 
-                self.log(f"   📤 {data['fecha']} | {row['Tipo']} | Cuenta ID: {data['cuenta_id']} | RD$ {data['monto']: ,.2f}")
-                self.log(f"      {desc[: 50]}...")
+                self.log(f"🔑 Transacción {i}/{len(selected_hashes)}: Hash = {h[:12]}...")
+                self.log(f"   📤 {data['fecha']} | {row['Tipo']} | Cuenta ID: {data['cuenta_id']} | RD$ {data['monto']:,.2f}")
+                self.log(f"      {desc[:50]}...")
                 
-                # Guardar en Firebase
-                if self.firebase_client. agregar_transaccion_a_proyecto(self.proyecto_id, data):
-                    count += 1
-                    hashes_remove.append(h)
-                    self.imported_hashes.add(h)
-                    self.log(f"   ✅ Guardada exitosamente")
-                else:
-                    err += 1
-                    self.log(f"   ❌ Error: Firebase retornó False")
-                    
+                # ✅ CREAR COMANDO (NO ejecutar aún)
+                from progain4.commands.transaction_commands import CreateTransactionCommand
+                
+                cmd = CreateTransactionCommand(
+                    self.firebase_client,
+                    self.proyecto_id,
+                    data
+                )
+                
+                commands.append(cmd)
+                hashes_remove.append(h)
+                
             except Exception as e:
                 err += 1
-                self. log(f"   ❌ Error procesando hash {h[: 12]}.. .: {e}")
+                self.log(f"   ❌ Error preparando transacción {h[:12]}...: {e}")
                 import traceback
                 self.log(f"   🔍 Traceback: {traceback.format_exc()}")
 
-        # Resumen y actualización
+        # ✅ EJECUTAR BATCH COMMAND VIA UNDO MANAGER
+        if commands:
+            self.log(f"")
+            self.log(f"🚀 Ejecutando {len(commands)} transacciones via UndoRedoManager...")
+            
+            from progain4.commands.batch_command import BatchCommand
+            
+            batch_cmd = BatchCommand(
+                commands,
+                f"Importar {len(commands)} transacciones desde archivo"
+            )
+            
+            # Obtener referencia a MainWindow
+            main_window = self.parent()
+            
+            if hasattr(main_window, 'undo_manager'):
+                # Ejecutar via UndoRedoManager
+                if main_window.undo_manager.execute_command(batch_cmd):
+                    count = len(commands)
+                    
+                    # Agregar hashes al historial
+                    for h in hashes_remove:
+                        self.imported_hashes.add(h)
+                    
+                    self.log(f"✅ {count} transacciones importadas exitosamente")
+                    self.log(f"📝 Registrado en historial de undo/redo")
+                else:
+                    err = len(commands)
+                    self.log(f"❌ Error ejecutando batch command")
+            else:
+                # Fallback: ejecutar directamente sin undo/redo
+                self.log(f"⚠️ UndoRedoManager no disponible, ejecutando directamente...")
+                
+                for cmd_idx, cmd in enumerate(commands):
+                    if cmd.execute():
+                        count += 1
+                        self.imported_hashes.add(hashes_remove[cmd_idx])
+                    else:
+                        err += 1
+
+        # Resumen
         self.log(f"")
         self.log(f"📊 RESUMEN DEL PROCESO:")
         self.log(f"   ✅ Importadas exitosas: {count}")
-        self.log(f"   ❌ Errores:  {err}")
+        self.log(f"   ❌ Errores: {err}")
         self.log(f"   🔑 Hashes únicos para eliminar: {len(hashes_remove)}")
         self.log(f"")
 
@@ -785,7 +827,7 @@ class ImporterWindowFirebaseQt(QDialog):
             
             # ✅ Eliminar por hash (incluye duplicados en DataFrame)
             self.df_data = self.df_data[~self.df_data['row_hash'].isin(hashes_remove)]
-            df_despues = len(self. df_data)
+            df_despues = len(self.df_data)
             eliminadas = df_antes - df_despues
             
             self.log(f"📊 Filas en tabla DESPUÉS de filtrar: {df_despues}")
@@ -796,7 +838,7 @@ class ImporterWindowFirebaseQt(QDialog):
                 extra = eliminadas - count
                 self.log(f"ℹ️ Se eliminaron {extra} filas adicionales (duplicados con mismo hash en el DataFrame)")
             elif eliminadas < count:
-                self.log(f"⚠️ ALERTA: Se esperaba eliminar más filas.  Posible inconsistencia.")
+                self.log(f"⚠️ ALERTA: Se esperaba eliminar más filas. Posible inconsistencia.")
             
             # Repoblar tabla
             self._populate_table_widget()
@@ -826,4 +868,4 @@ class ImporterWindowFirebaseQt(QDialog):
             msg += f"Revisa el log para más detalles."
             
             QMessageBox.warning(self, "Error", msg)
-            self.log(f"❌ Importación fallida:  0 transacciones guardadas")
+            self.log(f"❌ Importación fallida: 0 transacciones guardadas")

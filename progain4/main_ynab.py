@@ -116,6 +116,7 @@ class PROGRAIN4App:
                 self.firebase_client,
                 proyecto_id,
                 proyecto_nombre,
+                self.config_manager
             )
             
             # ✅ CORREGIDO: Guardar cuando CAMBIA de proyecto (no al cerrar)
